@@ -2,6 +2,10 @@
 
 #include <atomic>
 #include <thread>
+// #include <semaphore>
+#include <mutex>
+#include <condition_variable>
+#include <boost/circular_buffer.hpp>
 
 namespace tp
 {
@@ -75,9 +79,26 @@ private:
      */
     void threadFunc(size_t id, Worker* steal_donor);
 
-    Queue<Task> m_queue;
+    template <typename T>
+    bool pop(T & val)
+    {
+        if (m_cb.empty())
+            return false;
+        else
+        {
+            val = std::move(m_cb.front());
+            m_cb.pop_front();
+            return true;
+        }
+    }
+
+    // Queue<Task> m_queue;
+    boost::circular_buffer<Task> m_cb;
+
     std::atomic<bool> m_running_flag;
     std::thread m_thread;
+    std::mutex m_mutex;
+    std::condition_variable m_cond_var;
 };
 
 
@@ -94,7 +115,7 @@ namespace detail
 
 template <typename Task, template<typename> class Queue>
 inline Worker<Task, Queue>::Worker(size_t queue_size)
-    : m_queue(queue_size)
+    : m_cb(queue_size)
     , m_running_flag(true)
 {
 }
@@ -110,7 +131,7 @@ inline Worker<Task, Queue>& Worker<Task, Queue>::operator=(Worker&& rhs) noexcep
 {
     if (this != &rhs)
     {
-        m_queue = std::move(rhs.m_queue);
+        m_cb = std::move(rhs.m_cb);
         m_running_flag = rhs.m_running_flag.load();
         m_thread = std::move(rhs.m_thread);
     }
@@ -121,6 +142,8 @@ template <typename Task, template<typename> class Queue>
 inline void Worker<Task, Queue>::stop()
 {
     m_running_flag.store(false, std::memory_order_relaxed);
+    // m_sema.release();
+    m_cond_var.notify_one();
     m_thread.join();
 }
 
@@ -140,13 +163,23 @@ template <typename Task, template<typename> class Queue>
 template <typename Handler>
 inline bool Worker<Task, Queue>::post(Handler&& handler)
 {
-    return m_queue.push(std::forward<Handler>(handler));
+    bool ret = true;
+    {
+        std::unique_lock lock(m_mutex);
+        m_cb.push_back(std::forward<Handler>(handler));
+    }
+
+    // m_sema.release();
+    m_cond_var.notify_one();
+
+    return ret;
 }
 
 template <typename Task, template<typename> class Queue>
 inline bool Worker<Task, Queue>::steal(Task& task)
 {
-    return m_queue.pop(task);
+    std::lock_guard lock(m_mutex);
+    return pop(task);
 }
 
 template <typename Task, template<typename> class Queue>
@@ -158,8 +191,11 @@ inline void Worker<Task, Queue>::threadFunc(size_t id, Worker* steal_donor)
 
     while (m_running_flag.load(std::memory_order_relaxed))
     {
-        if (m_queue.pop(handler) || steal_donor->steal(handler))
+        std::unique_lock lock(m_mutex);
+
+        if (pop(handler) || steal_donor->steal(handler))
         {
+            lock.unlock();  // too late in case of steal
             try
             {
                 handler();
@@ -171,7 +207,9 @@ inline void Worker<Task, Queue>::threadFunc(size_t id, Worker* steal_donor)
         }
         else
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            // std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            // m_sema.acquire();
+            m_cond_var.wait(lock);
         }
     }
 }

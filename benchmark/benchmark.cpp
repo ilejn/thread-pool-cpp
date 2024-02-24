@@ -12,7 +12,9 @@
 
 using namespace tp;
 
+// static const size_t CONCURRENCY = 16384;
 static const size_t CONCURRENCY = 16;
+// static const size_t REPOST_COUNT = 100000;
 static const size_t REPOST_COUNT = 1000000;
 
 struct Heavy
@@ -155,6 +157,7 @@ int main(int, const char* [])
         std::cout << "***thread pool cpp***" << std::endl;
 
         std::promise<void> waiters[CONCURRENCY];
+        // ThreadPool thread_pool(ThreadPoolOptions().setQueueSize(CONCURRENCY).setThreadCount(CONCURRENCY / 8));
         ThreadPool thread_pool;
         for(auto& waiter : waiters)
         {
