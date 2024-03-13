@@ -19,10 +19,16 @@ public:
     ThreadPoolOptions();
 
     /**
-     * @brief setThreadCount Set thread count.
-     * @param count Number of threads to be created.
+     * @brief setMaxThreadCount Set thread count.
+     * @param count Number of threads can be created
      */
-    ThreadPoolOptions & setThreadCount(size_t count);
+    ThreadPoolOptions & setMaxThreads(size_t count);
+
+    /**
+     * @brief setMaxFreeThreads Set thread count.
+     * @param count Number of threads keep active without a job.
+     */
+    ThreadPoolOptions & setMaxFreeThreads(size_t count);
 
     /**
      * @brief setQueueSize Set single worker queue size.
@@ -40,8 +46,11 @@ public:
      */
     size_t queueSize() const;
 
+    size_t maxFreeThreads() const;
+
 private:
     size_t m_thread_count;
+    size_t m_max_free_threads;
     size_t m_queue_size;
 };
 
@@ -49,11 +58,12 @@ private:
 
 inline ThreadPoolOptions::ThreadPoolOptions()
     : m_thread_count(std::max<size_t>(1u, std::thread::hardware_concurrency()))
+    , m_max_free_threads(m_thread_count)
     , m_queue_size(1024u)
 {
 }
 
-inline ThreadPoolOptions &  ThreadPoolOptions::setThreadCount(size_t count)
+inline ThreadPoolOptions &  ThreadPoolOptions::setMaxThreads(size_t count)
 {
     m_thread_count = std::max<size_t>(1u, count);
     return *this;
@@ -65,6 +75,12 @@ inline ThreadPoolOptions &  ThreadPoolOptions::setQueueSize(size_t size)
     return *this;
 }
 
+inline ThreadPoolOptions &  ThreadPoolOptions::setMaxFreeThreads(size_t size)
+{
+    m_max_free_threads = std::max<size_t>(1u, size);
+    return *this;
+}
+
 inline size_t ThreadPoolOptions::threadCount() const
 {
     return m_thread_count;
@@ -73,6 +89,11 @@ inline size_t ThreadPoolOptions::threadCount() const
 inline size_t ThreadPoolOptions::queueSize() const
 {
     return m_queue_size;
+}
+
+inline size_t ThreadPoolOptions::maxFreeThreads() const
+{
+    return m_max_free_threads;
 }
 
 }

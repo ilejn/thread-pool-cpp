@@ -17,7 +17,7 @@ TEST(ThreadPoolOptions, modification)
 {
     tp::ThreadPoolOptions options;
 
-    options.setThreadCount(5);
+    options.setMaxThreads(5);
     ASSERT_EQ(5, options.threadCount());
 
     options.setQueueSize(32);

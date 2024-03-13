@@ -7,16 +7,19 @@
 #include <condition_variable>
 #include <boost/circular_buffer.hpp>
 
+#include <thread_pool/handler.hpp>
+
+
 namespace tp
 {
 
 /**
  * @brief The Worker class owns task queue and executing thread.
- * In thread it tries to pop task from queue. If queue is empty then it tries
+ * In thread it tries to poqp task from queue. If queue is empty then it tries
  * to steal task from the sibling worker. If steal was unsuccessful then spins
  * with one millisecond delay.
  */
-template <typename Task, template<typename> class Queue>
+template <typename Task>
 class Worker
 {
 public:
@@ -24,7 +27,7 @@ public:
      * @brief Worker Constructor.
      * @param queue_size Length of undelaying task queue.
      */
-    explicit Worker(size_t queue_size);
+    explicit Worker(size_t queue_size, ActiveWorkers* handler_ptr);
 
     /**
      * @brief Move ctor implementation.
@@ -99,6 +102,8 @@ private:
     std::thread m_thread;
     std::mutex m_mutex;
     std::condition_variable m_cond_var;
+
+    ActiveWorkers* m_handler_ptr;
 };
 
 
@@ -113,33 +118,35 @@ namespace detail
     }
 }
 
-template <typename Task, template<typename> class Queue>
-inline Worker<Task, Queue>::Worker(size_t queue_size)
+template <typename Task>
+inline Worker<Task>::Worker(size_t queue_size, ActiveWorkers* handler_ptr)
     : m_cb(queue_size)
     , m_running_flag(true)
+    , m_handler_ptr(handler_ptr)
 {
 }
 
-template <typename Task, template<typename> class Queue>
-inline Worker<Task, Queue>::Worker(Worker&& rhs) noexcept
+template <typename Task>
+inline Worker<Task>::Worker(Worker&& rhs) noexcept
 {
     *this = rhs;
 }
 
-template <typename Task, template<typename> class Queue>
-inline Worker<Task, Queue>& Worker<Task, Queue>::operator=(Worker&& rhs) noexcept
+template <typename Task>
+inline Worker<Task>& Worker<Task>::operator=(Worker&& rhs) noexcept
 {
     if (this != &rhs)
     {
         m_cb = std::move(rhs.m_cb);
         m_running_flag = rhs.m_running_flag.load();
+        m_handler_ptr->m_active_workers = rhs.m_handler_ptr->m_active_workers.load();
         m_thread = std::move(rhs.m_thread);
     }
     return *this;
 }
 
-template <typename Task, template<typename> class Queue>
-inline void Worker<Task, Queue>::stop()
+template <typename Task>
+inline void Worker<Task>::stop()
 {
     m_running_flag.store(false, std::memory_order_relaxed);
     // m_sema.release();
@@ -147,21 +154,21 @@ inline void Worker<Task, Queue>::stop()
     m_thread.join();
 }
 
-template <typename Task, template<typename> class Queue>
-inline void Worker<Task, Queue>::start(size_t id, Worker* steal_donor)
+template <typename Task>
+inline void Worker<Task>::start(size_t id, Worker* steal_donor)
 {
-    m_thread = std::thread(&Worker<Task, Queue>::threadFunc, this, id, steal_donor);
+    m_thread = std::thread(&Worker<Task>::threadFunc, this, id, steal_donor);
 }
 
-template <typename Task, template<typename> class Queue>
-inline size_t Worker<Task, Queue>::getWorkerIdForCurrentThread()
+template <typename Task>
+inline size_t Worker<Task>::getWorkerIdForCurrentThread()
 {
     return *detail::thread_id();
 }
 
-template <typename Task, template<typename> class Queue>
+template <typename Task>
 template <typename Handler>
-inline bool Worker<Task, Queue>::post(Handler&& handler)
+inline bool Worker<Task>::post(Handler&& handler)
 {
     bool ret = true;
     {
@@ -175,15 +182,15 @@ inline bool Worker<Task, Queue>::post(Handler&& handler)
     return ret;
 }
 
-template <typename Task, template<typename> class Queue>
-inline bool Worker<Task, Queue>::steal(Task& task)
+template <typename Task>
+inline bool Worker<Task>::steal(Task& task)
 {
     std::lock_guard lock(m_mutex);
     return pop(task);
 }
 
-template <typename Task, template<typename> class Queue>
-inline void Worker<Task, Queue>::threadFunc(size_t id, Worker* steal_donor)
+template <typename Task>
+inline void Worker<Task>::threadFunc(size_t id, Worker* steal_donor)
 {
     *detail::thread_id() = id;
 
@@ -198,12 +205,14 @@ inline void Worker<Task, Queue>::threadFunc(size_t id, Worker* steal_donor)
             lock.unlock();  // too late in case of steal
             try
             {
+                ++m_handler_ptr->m_active_workers;
                 handler();
             }
             catch(...)
             {
                 // suppress all exceptions
             }
+            --m_handler_ptr->m_active_workers;
         }
         else
         {
