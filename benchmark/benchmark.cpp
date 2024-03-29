@@ -157,8 +157,8 @@ int main(int, const char* [])
         std::cout << "***thread pool cpp***" << std::endl;
 
         std::promise<void> waiters[CONCURRENCY];
-        // ThreadPool thread_pool(ThreadPoolOptions().setQueueSize(CONCURRENCY).setThreadCount(CONCURRENCY / 8));
-        ThreadPool thread_pool;
+        ThreadPool thread_pool(ThreadPoolOptions().setMaxFreeThreads(10).setMaxThreads(20));
+        // ThreadPool thread_pool;
         for(auto& waiter : waiters)
         {
             thread_pool.post(RepostJob(&thread_pool, &waiter));

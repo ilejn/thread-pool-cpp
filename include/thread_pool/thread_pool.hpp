@@ -82,13 +82,13 @@ public:
     void wait();
 
 private:
-    Worker<Task>& getWorker();
+    Worker<Task>* getWorker();
 
+    ThreadPoolOptions m_options;
     std::vector<std::unique_ptr<Worker<Task>>> m_workers;
     std::atomic<size_t> m_next_worker;
     std::atomic<size_t> m_num_workers;
     std::atomic<size_t> m_active_workers;
-    ThreadPoolOptions m_options;
     std::mutex m_mutex;
 };
 
@@ -97,9 +97,11 @@ private:
 
 template <typename Task>
 inline ThreadPoolImpl<Task>::ThreadPoolImpl(const ThreadPoolOptions& options)
-    : m_workers(options.maxFreeThreads())
+    : m_options(options)
+    , m_workers(options.threadCount() - options.maxFreeThreads())
     , m_next_worker(0)
 {
+    m_workers.reserve(options.threadCount());
     for(auto& worker_ptr : m_workers)
     {
         worker_ptr.reset(new Worker<Task>(options.queueSize(), this));
@@ -162,28 +164,51 @@ template <typename Task>
 template <typename Handler>
 inline bool ThreadPoolImpl<Task>::tryPost(Handler&& handler)
 {
+    auto worker = getWorker();
 
-    while (/* switch to atomic */ m_active_workers == m_num_workers && m_num_workers < m_options.threadCount())
+    if (worker->is_busy())
     {
-        size_t new_worker_num = 0;
+        std::cout << "getWorker().is_busy()" << std::endl;
+        std::unique_lock lock(m_mutex);
+        size_t worker_id = 0;
+        for (; worker_id < m_num_workers; ++worker_id)
         {
-            std::unique_lock lock(m_mutex);
-
-            new_worker_num = m_workers.size();
-            if (!(/* switch to atomic */ m_active_workers == new_worker_num && new_worker_num < m_options.threadCount()))
+            if (!m_workers[worker_id]->is_busy())
             {
+                // Worker<Task>::setWorkerIdForCurrentThread(worker_id);
+                worker = m_workers[worker_id].get();
                 break;
             }
-
-            m_workers.emplace_back(std::make_unique<Worker<Task>>(m_options.queueSize(), this));
-            m_num_workers++;
         }
-        Worker<Task>* steal_donor = m_workers[(new_worker_num + 1) % m_workers.size()].get();
-        m_workers[new_worker_num]->start(new_worker_num, steal_donor);
-        break;
+        if (worker_id == m_num_workers)
+        {
+            while (m_num_workers < m_options.threadCount())
+            {
+                size_t new_worker_num = 0;
+                {
+
+                    new_worker_num = m_workers.size();
+                    std::cout << "m_active_tasks " << m_active_tasks << " < new_worker_num " <<  new_worker_num << ", m_options.threadCount() " << m_options.threadCount() << std::endl;
+                    if (/* switch to atomic */ m_active_tasks < new_worker_num * 1 || new_worker_num >= m_options.threadCount())
+                    {
+                        break;
+                    }
+
+                    m_workers.emplace_back(std::make_unique<Worker<Task>>(m_options.queueSize(), this));
+                    m_num_workers++;
+                }
+                // new_worker_num++;
+                Worker<Task>* steal_donor = m_workers[(new_worker_num + 1) % new_worker_num].get();
+                lock.unlock();
+                // Worker<Task>::setWorkerIdForCurrentThread(new_worker_num);
+                worker = m_workers[new_worker_num].get();
+                worker->start(new_worker_num, steal_donor);
+                break;
+            }
+        }
     }
 
-    return getWorker().post(std::forward<Handler>(handler));
+    return worker->post(std::forward<Handler>(handler));
 }
 
 template <typename Task>
@@ -198,7 +223,7 @@ inline void ThreadPoolImpl<Task>::post(Handler&& handler)
 }
 
 template <typename Task>
-inline Worker<Task>& ThreadPoolImpl<Task>::getWorker()
+inline Worker<Task>* ThreadPoolImpl<Task>::getWorker()
 {
     auto id = Worker<Task>::getWorkerIdForCurrentThread();
 
@@ -211,8 +236,8 @@ inline Worker<Task>& ThreadPoolImpl<Task>::getWorker()
     // auto id = m_next_worker.fetch_add(1, std::memory_order_relaxed) %
     //          m_workers.size();
 
-    // std::cerr << id << ", " << std::this_thread::get_id() << std::endl;
+    std::cerr << id << ", " << std::this_thread::get_id() << std::endl;
 
-    return *m_workers[id];
+    return m_workers[id].get();
 }
 }

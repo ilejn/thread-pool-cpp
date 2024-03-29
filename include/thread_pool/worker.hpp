@@ -8,7 +8,7 @@
 #include <boost/circular_buffer.hpp>
 
 #include <thread_pool/handler.hpp>
-
+#include <iostream>
 
 namespace tp
 {
@@ -74,6 +74,24 @@ public:
      */
     static size_t getWorkerIdForCurrentThread();
 
+    static void setWorkerIdForCurrentThread(size_t id);
+
+
+    bool is_busy() const
+    {
+        if (m_busy)
+        {
+            std::cout << (void*)this << " is_busy about to return true" << std::endl;
+            return true;
+        }
+        else
+        {
+            std::cout << (void*)this << "is_busy about to return false" << std::endl;
+            return false;
+        }
+    }
+
+
 private:
     /**
      * @brief threadFunc Executing thread function.
@@ -86,7 +104,10 @@ private:
     bool pop(T & val)
     {
         if (m_cb.empty())
+        {
+            // m_busy = false;
             return false;
+        }
         else
         {
             val = std::move(m_cb.front());
@@ -103,7 +124,10 @@ private:
     std::mutex m_mutex;
     std::condition_variable m_cond_var;
 
+    // bool m_busy;
+
     ActiveWorkers* m_handler_ptr;
+    std::atomic<bool> m_busy;
 };
 
 
@@ -123,6 +147,7 @@ inline Worker<Task>::Worker(size_t queue_size, ActiveWorkers* handler_ptr)
     : m_cb(queue_size)
     , m_running_flag(true)
     , m_handler_ptr(handler_ptr)
+    // , m_busy(false)
 {
 }
 
@@ -139,8 +164,9 @@ inline Worker<Task>& Worker<Task>::operator=(Worker&& rhs) noexcept
     {
         m_cb = std::move(rhs.m_cb);
         m_running_flag = rhs.m_running_flag.load();
-        m_handler_ptr->m_active_workers = rhs.m_handler_ptr->m_active_workers.load();
+        m_handler_ptr->m_active_tasks = rhs.m_handler_ptr->m_active_workers.load();
         m_thread = std::move(rhs.m_thread);
+        m_busy = rhs.m_busy.load();
     }
     return *this;
 }
@@ -157,13 +183,29 @@ inline void Worker<Task>::stop()
 template <typename Task>
 inline void Worker<Task>::start(size_t id, Worker* steal_donor)
 {
+    assert(!m_thread.joinable());
+    if (steal_donor == this)
+    {
+        steal_donor = 0;
+    }
+
+
     m_thread = std::thread(&Worker<Task>::threadFunc, this, id, steal_donor);
 }
 
 template <typename Task>
 inline size_t Worker<Task>::getWorkerIdForCurrentThread()
 {
-    return *detail::thread_id();
+    size_t id =  *detail::thread_id();
+    std::cout << std::this_thread::get_id() << " id=" << id << std::endl;
+    return id;
+
+}
+
+template <typename Task>
+inline void Worker<Task>::setWorkerIdForCurrentThread(size_t id)
+{
+    *detail::thread_id() = id;
 }
 
 template <typename Task>
@@ -172,12 +214,17 @@ inline bool Worker<Task>::post(Handler&& handler)
 {
     bool ret = true;
     {
+        ++m_handler_ptr->m_active_tasks;
+        m_busy = true;
+        std::cout << (void*)this << " m_busy to true" << std::endl;
         std::unique_lock lock(m_mutex);
+        // m_busy.store(true, std::memory_order_relaxed);
         m_cb.push_back(std::forward<Handler>(handler));
     }
 
     // m_sema.release();
     m_cond_var.notify_one();
+
 
     return ret;
 }
@@ -186,7 +233,13 @@ template <typename Task>
 inline bool Worker<Task>::steal(Task& task)
 {
     std::lock_guard lock(m_mutex);
-    return pop(task);
+    if (pop(task))
+    {
+        --m_handler_ptr->m_active_tasks;
+        return true;
+    }
+    // m_busy ??
+    return false;
 }
 
 template <typename Task>
@@ -200,24 +253,56 @@ inline void Worker<Task>::threadFunc(size_t id, Worker* steal_donor)
     {
         std::unique_lock lock(m_mutex);
 
-        if (pop(handler) || steal_donor->steal(handler))
+        if (pop(handler)  || (steal_donor && steal_donor->steal(handler)) )
         {
             lock.unlock();  // too late in case of steal
             try
             {
-                ++m_handler_ptr->m_active_workers;
+                if (!m_busy)
+                {
+                    m_busy = true;
+                    // ++m_handler_ptr->m_active_tasks;
+                }
+
+                // m_active = true;
                 handler();
             }
             catch(...)
             {
                 // suppress all exceptions
             }
-            --m_handler_ptr->m_active_workers;
+            // m_active = false;
         }
+        // else if (steal_donor->steal(handler))
+        // {
+        //     lock.unlock();  // too late in case of steal
+        //     try
+        //     {
+        //         if (!m_busy)
+        //         {
+        //             m_busy = true;
+        //             ++m_handler_ptr->m_active_tasks;
+        //         }
+
+        //         // m_active = true;
+        //         handler();
+        //     }
+        //     catch(...)
+        //     {
+        //         // suppress all exceptions
+        //     }
+        // }
         else
         {
+            if (m_busy)
+            {
+                std::cout << (void*)this << " m_busy to false" << std::endl;
+                m_busy = false;
+                --m_handler_ptr->m_active_tasks;
+            }
             // std::this_thread::sleep_for(std::chrono::milliseconds(1));
             // m_sema.acquire();
+            // m_busy.store(false, std::memory_order_relaxed);
             m_cond_var.wait(lock);
         }
     }
