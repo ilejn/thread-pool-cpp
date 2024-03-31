@@ -81,15 +81,26 @@ public:
      */
     void wait();
 
+    size_t getActiveThreads()
+    {
+        return m_num_workers;
+    }
+
+    void tryShrink(Worker<Task>*);
+
+
 private:
+    const size_t skip_shrink_attempts = 3;
+
     Worker<Task>* getWorker();
 
     ThreadPoolOptions m_options;
-    std::vector<std::unique_ptr<Worker<Task>>> m_workers;
-    std::atomic<size_t> m_next_worker;
     std::atomic<size_t> m_num_workers;
-    std::atomic<size_t> m_active_workers;
+    std::vector<std::unique_ptr<Worker<Task>>> m_workers;
+    std::vector<size_t> m_free_workers;
+    std::atomic<size_t> m_next_worker;
     std::mutex m_mutex;
+    std::atomic<size_t> m_shrink_attempt;
 };
 
 
@@ -98,10 +109,12 @@ private:
 template <typename Task>
 inline ThreadPoolImpl<Task>::ThreadPoolImpl(const ThreadPoolOptions& options)
     : m_options(options)
-    , m_workers(options.threadCount() - options.maxFreeThreads())
+    , m_num_workers(options.threadCount() - options.maxFreeThreads())
+    , m_workers(m_num_workers)
     , m_next_worker(0)
 {
     m_workers.reserve(options.threadCount());
+    m_free_workers.reserve(options.threadCount());
     for(auto& worker_ptr : m_workers)
     {
         worker_ptr.reset(new Worker<Task>(options.queueSize(), this));
@@ -154,7 +167,6 @@ ThreadPoolImpl<Task>::operator=(ThreadPoolImpl<Task>&& rhs) noexcept
 
         m_workers = std::move(rhs.m_workers);
         m_next_worker = rhs.m_next_worker.load();
-        m_active_workers = rhs.m_active_workers.load();
         m_num_workers = rhs.m_num_workers.load();
     }
     return *this;
@@ -173,7 +185,7 @@ inline bool ThreadPoolImpl<Task>::tryPost(Handler&& handler)
         size_t worker_id = 0;
         for (; worker_id < m_num_workers; ++worker_id)
         {
-            if (!m_workers[worker_id]->is_busy())
+            if (m_workers[worker_id] && !m_workers[worker_id]->is_busy())
             {
                 // Worker<Task>::setWorkerIdForCurrentThread(worker_id);
                 worker = m_workers[worker_id].get();
@@ -185,31 +197,73 @@ inline bool ThreadPoolImpl<Task>::tryPost(Handler&& handler)
             while (m_num_workers < m_options.threadCount())
             {
                 size_t new_worker_num = 0;
+
+                new_worker_num = m_workers.size();
+                std::cout << "m_active_tasks " << m_active_tasks << " < new_worker_num " <<  new_worker_num << ", m_options.threadCount() " << m_options.threadCount() << std::endl;
+                if (m_active_tasks < new_worker_num * 1 || new_worker_num >= m_options.threadCount())
                 {
+                    break;
+                }
 
-                    new_worker_num = m_workers.size();
-                    std::cout << "m_active_tasks " << m_active_tasks << " < new_worker_num " <<  new_worker_num << ", m_options.threadCount() " << m_options.threadCount() << std::endl;
-                    if (/* switch to atomic */ m_active_tasks < new_worker_num * 1 || new_worker_num >= m_options.threadCount())
-                    {
-                        break;
-                    }
+                Worker<Task>* steal_donor = 0;
 
+                if (m_free_workers.empty())
+                {
                     m_workers.emplace_back(std::make_unique<Worker<Task>>(m_options.queueSize(), this));
                     m_num_workers++;
+
+                    // new_worker_num++;
+                    lock.unlock();
+                    // Worker<Task>::setWorkerIdForCurrentThread(new_worker_num);
+                    worker = m_workers[new_worker_num].get();
                 }
-                // new_worker_num++;
-                Worker<Task>* steal_donor = m_workers[(new_worker_num + 1) % new_worker_num].get();
-                lock.unlock();
-                // Worker<Task>::setWorkerIdForCurrentThread(new_worker_num);
-                worker = m_workers[new_worker_num].get();
+                else
+                {
+                    new_worker_num = m_free_workers.back();
+                    m_free_workers.pop_back();
+                    m_workers[new_worker_num] = std::move(std::make_unique<Worker<Task>>(m_options.queueSize(), this));
+                    lock.unlock();
+                }
+
+                steal_donor = m_workers[(new_worker_num + 1) % new_worker_num].get();
                 worker->start(new_worker_num, steal_donor);
                 break;
             }
         }
     }
+    else
+    {
+        tryShrink(worker);
+    }
+
 
     return worker->post(std::forward<Handler>(handler));
 }
+
+
+template <typename Task>
+inline void ThreadPoolImpl<Task>::tryShrink(Worker<Task>* worker)
+{
+    std::cout << "Top of tryShrink()" << std::endl;
+
+    if (m_shrink_attempt++ % skip_shrink_attempts)
+    {
+        if (m_active_tasks < m_num_workers)
+        {
+            std::unique_lock lock(m_mutex);
+            if (!worker->is_busy() && m_active_tasks < m_num_workers && m_num_workers > m_options.threadCount())
+            {
+                std::cout << "shrinking" << std::endl;
+                worker->stop();
+                auto num = worker->get_id();
+                m_workers[num] = 0;
+                m_free_workers.push_back(num);
+                m_num_workers--;
+            }
+        }
+    }
+}
+
 
 template <typename Task>
 template <typename Handler>
@@ -227,17 +281,18 @@ inline Worker<Task>* ThreadPoolImpl<Task>::getWorker()
 {
     auto id = Worker<Task>::getWorkerIdForCurrentThread();
 
-    if (id > m_workers.size())
+    Worker<Task>* raw_ptr = 0;
+    for (; !raw_ptr; id = m_next_worker.fetch_add(1, std::memory_order_relaxed) % m_workers.size())
     {
-        id = m_next_worker.fetch_add(1, std::memory_order_relaxed) %
-             m_workers.size();
+        if (id < m_workers.size())
+        {
+            raw_ptr = m_workers[id].get();
+        }
     }
 
-    // auto id = m_next_worker.fetch_add(1, std::memory_order_relaxed) %
-    //          m_workers.size();
 
     std::cerr << id << ", " << std::this_thread::get_id() << std::endl;
 
-    return m_workers[id].get();
+    return raw_ptr;
 }
 }

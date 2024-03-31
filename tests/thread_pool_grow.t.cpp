@@ -24,9 +24,9 @@ size_t getWorkerIdForCurrentThread2()
 TEST(ThreadPool, poolGrow)
 {
 
-    const size_t NUM_TASKS = 10;
+    const size_t NUM_TASKS = 200;
 
-    tp::ThreadPool pool(tp::ThreadPoolOptions().setMaxThreads(100).setMaxFreeThreads(1));
+    tp::ThreadPool pool(tp::ThreadPoolOptions().setMaxThreads(50).setMaxFreeThreads(10));
     std::vector<std::packaged_task<int()>> task_vector;
     std::vector<std::future<int>> future_vector;
 
@@ -50,8 +50,12 @@ TEST(ThreadPool, poolGrow)
     for (size_t i = 0; i < NUM_TASKS; ++i)
     {
         pool.post(task_vector[i]);
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    std::cout << "active_threads " << pool.getActiveThreads() << std::endl;
 
 
     for (size_t i = 0; i < NUM_TASKS; ++i)

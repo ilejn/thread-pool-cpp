@@ -50,7 +50,7 @@ public:
 
 private:
     size_t m_thread_count;
-    size_t m_max_free_threads;
+    ssize_t m_max_free_threads;
     size_t m_queue_size;
 };
 
@@ -58,7 +58,7 @@ private:
 
 inline ThreadPoolOptions::ThreadPoolOptions()
     : m_thread_count(std::max<size_t>(1u, std::thread::hardware_concurrency()))
-    , m_max_free_threads(m_thread_count)
+    , m_max_free_threads(-1)
     , m_queue_size(1024u)
 {
 }
@@ -93,7 +93,7 @@ inline size_t ThreadPoolOptions::queueSize() const
 
 inline size_t ThreadPoolOptions::maxFreeThreads() const
 {
-    return m_max_free_threads;
+    return m_max_free_threads == -1 ? m_thread_count : m_max_free_threads;
 }
 
 }

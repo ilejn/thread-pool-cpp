@@ -91,6 +91,12 @@ public:
         }
     }
 
+    ssize_t get_id()
+    {
+        return m_id;
+    }
+
+
 
 private:
     /**
@@ -128,6 +134,7 @@ private:
 
     ActiveWorkers* m_handler_ptr;
     std::atomic<bool> m_busy;
+    ssize_t m_id = -1;
 };
 
 
@@ -183,6 +190,8 @@ inline void Worker<Task>::stop()
 template <typename Task>
 inline void Worker<Task>::start(size_t id, Worker* steal_donor)
 {
+    m_id = id;
+
     assert(!m_thread.joinable());
     if (steal_donor == this)
     {
