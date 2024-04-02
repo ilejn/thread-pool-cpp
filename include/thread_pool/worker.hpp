@@ -81,12 +81,12 @@ public:
     {
         if (m_busy)
         {
-            std::cout << (void*)this << " is_busy about to return true" << std::endl;
+            // std::cout << (void*)this << " is_busy about to return true" << std::endl;
             return true;
         }
         else
         {
-            std::cout << (void*)this << "is_busy about to return false" << std::endl;
+            // std::cout << (void*)this << "is_busy about to return false" << std::endl;
             return false;
         }
     }
@@ -96,7 +96,10 @@ public:
         return m_id;
     }
 
-
+    std::chrono::time_point<std::chrono::steady_clock> idleSince()
+    {
+        return m_idle_since;
+    }
 
 private:
     /**
@@ -135,6 +138,8 @@ private:
     ActiveWorkers* m_handler_ptr;
     std::atomic<bool> m_busy;
     ssize_t m_id = -1;
+
+    std::chrono::time_point<std::chrono::steady_clock> m_idle_since;
 };
 
 
@@ -192,7 +197,7 @@ inline void Worker<Task>::start(size_t id, Worker* steal_donor)
 {
     m_id = id;
 
-    assert(!m_thread.joinable());
+    assert (!m_thread.joinable());
     if (steal_donor == this)
     {
         steal_donor = 0;
@@ -206,7 +211,7 @@ template <typename Task>
 inline size_t Worker<Task>::getWorkerIdForCurrentThread()
 {
     size_t id =  *detail::thread_id();
-    std::cout << std::this_thread::get_id() << " id=" << id << std::endl;
+    // std::cout << std::this_thread::get_id() << " id=" << id << std::endl;
     return id;
 
 }
@@ -225,7 +230,7 @@ inline bool Worker<Task>::post(Handler&& handler)
     {
         ++m_handler_ptr->m_active_tasks;
         m_busy = true;
-        std::cout << (void*)this << " m_busy to true" << std::endl;
+        // std::cout << (void*)this << " m_busy to true" << std::endl;
         std::unique_lock lock(m_mutex);
         // m_busy.store(true, std::memory_order_relaxed);
         m_cb.push_back(std::forward<Handler>(handler));
@@ -305,10 +310,12 @@ inline void Worker<Task>::threadFunc(size_t id, Worker* steal_donor)
         {
             if (m_busy)
             {
-                std::cout << (void*)this << " m_busy to false" << std::endl;
+                // std::cout << (void*)this << " m_busy to false" << std::endl;
                 m_busy = false;
                 --m_handler_ptr->m_active_tasks;
             }
+            m_idle_since = std::chrono::steady_clock::now();
+
             // std::this_thread::sleep_for(std::chrono::milliseconds(1));
             // m_sema.acquire();
             // m_busy.store(false, std::memory_order_relaxed);

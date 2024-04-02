@@ -53,9 +53,24 @@ TEST(ThreadPool, poolGrow)
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     std::cout << "active_threads " << pool.getActiveThreads() << std::endl;
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(600));
+    std::packaged_task<int()> t([]()
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            return 42;
+        });
+
+    std::future<int> r = t.get_future();
+
+    pool.post(t);
+
+    ASSERT_EQ(42, r.get());
+
+
+    std::cout << "active_threads after sleep " << pool.getActiveThreads() << std::endl;
 
 
     for (size_t i = 0; i < NUM_TASKS; ++i)
@@ -64,7 +79,13 @@ TEST(ThreadPool, poolGrow)
     }
     auto end_time = std::chrono::high_resolution_clock::now();
 
+
     std::cout << "elapsed milliseconds " << std::chrono::duration_cast<std::chrono::milliseconds>(end_time - begin_time).count() << std::endl;
+
+    pool.wait();
+
+    std::cout << "after wait, elapsed milliseconds " << std::chrono::duration_cast<std::chrono::milliseconds>(end_time - begin_time).count() << std::endl;
+
 
 }
 

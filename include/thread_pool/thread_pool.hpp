@@ -90,7 +90,8 @@ public:
 
 
 private:
-    const size_t skip_shrink_attempts = 3;
+    const size_t skip_shrink_attempts = 1; // 3
+    const long idle_milliseconds = 50; // 1000
 
     Worker<Task>* getWorker();
 
@@ -151,9 +152,12 @@ template <typename Task>
 inline void ThreadPoolImpl<Task>::wait()
 {
     std::unique_lock lock(m_mutex);
-    for (auto& worker_ptr : m_workers)
+    for (auto & worker_ptr : m_workers)
     {
-        worker_ptr->stop();
+        if (worker_ptr)
+        {
+            worker_ptr->stop();
+        }
     }
 }
 
@@ -177,6 +181,7 @@ template <typename Handler>
 inline bool ThreadPoolImpl<Task>::tryPost(Handler&& handler)
 {
     auto worker = getWorker();
+    bool try_shrink = false;
 
     if (worker->is_busy())
     {
@@ -194,7 +199,7 @@ inline bool ThreadPoolImpl<Task>::tryPost(Handler&& handler)
         }
         if (worker_id == m_num_workers)
         {
-            while (m_num_workers < m_options.threadCount())
+            while (m_num_workers < m_options.threadCount()) /// empty slots?
             {
                 size_t new_worker_num = 0;
 
@@ -215,7 +220,6 @@ inline bool ThreadPoolImpl<Task>::tryPost(Handler&& handler)
                     // new_worker_num++;
                     lock.unlock();
                     // Worker<Task>::setWorkerIdForCurrentThread(new_worker_num);
-                    worker = m_workers[new_worker_num].get();
                 }
                 else
                 {
@@ -225,6 +229,7 @@ inline bool ThreadPoolImpl<Task>::tryPost(Handler&& handler)
                     lock.unlock();
                 }
 
+                worker = m_workers[new_worker_num].get();
                 steal_donor = m_workers[(new_worker_num + 1) % new_worker_num].get();
                 worker->start(new_worker_num, steal_donor);
                 break;
@@ -233,32 +238,55 @@ inline bool ThreadPoolImpl<Task>::tryPost(Handler&& handler)
     }
     else
     {
-        tryShrink(worker);
+        try_shrink = true;
     }
 
-
-    return worker->post(std::forward<Handler>(handler));
+    const auto & post_ret = worker->post(std::forward<Handler>(handler));
+    if (try_shrink)
+    {
+        tryShrink(worker);
+    }
+    return post_ret;
 }
 
 
 template <typename Task>
-inline void ThreadPoolImpl<Task>::tryShrink(Worker<Task>* worker)
+inline void ThreadPoolImpl<Task>::tryShrink(Worker<Task>* /* worker */)
 {
     std::cout << "Top of tryShrink()" << std::endl;
 
-    if (m_shrink_attempt++ % skip_shrink_attempts)
+    if (!(m_shrink_attempt++ % skip_shrink_attempts))
     {
-        if (m_active_tasks < m_num_workers)
+        // if (m_active_tasks < m_num_workers)
+        // {
+        //     std::unique_lock lock(m_mutex);
+        //     if (!worker->is_busy() && m_active_tasks < m_num_workers && m_num_workers > m_options.threadCount())
+        //     {
+        //         std::cout << "shrinking" << std::endl;
+        //         worker->stop();
+        //         auto num = worker->get_id();
+        //         m_workers[num] = 0;
+        //         m_free_workers.push_back(num);
+        //         m_num_workers--;
+        //     }
+        // }
+        auto now = std::chrono::steady_clock::now();
+        for (size_t worker_num = 0; worker_num < m_num_workers; ++worker_num)
         {
-            std::unique_lock lock(m_mutex);
-            if (!worker->is_busy() && m_active_tasks < m_num_workers && m_num_workers > m_options.threadCount())
+            const auto worker_ptr = m_workers[worker_num].get();
+            if (worker_ptr && !worker_ptr->is_busy())
             {
-                std::cout << "shrinking" << std::endl;
-                worker->stop();
-                auto num = worker->get_id();
-                m_workers[num] = 0;
-                m_free_workers.push_back(num);
-                m_num_workers--;
+                auto idle_since = worker_ptr->idleSince();
+                if (std::chrono::duration_cast<std::chrono::milliseconds>(now - idle_since).count() > idle_milliseconds)
+                {
+                    std::cout << "shrinking" << std::endl;
+                    worker_ptr->stop();
+                    auto num = worker_ptr->get_id();
+                    m_workers[num] = 0;
+                    m_free_workers.push_back(num);
+                    m_num_workers--;
+
+                }
             }
         }
     }
