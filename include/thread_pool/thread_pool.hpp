@@ -188,7 +188,7 @@ inline bool ThreadPoolImpl<Task>::tryPost(Handler&& handler)
         std::cout << "getWorker().is_busy()" << std::endl;
         std::unique_lock lock(m_mutex);
         size_t worker_id = 0;
-        for (; worker_id < m_num_workers; ++worker_id)
+        for (; worker_id < m_workers.size(); ++worker_id)
         {
             if (m_workers[worker_id] && !m_workers[worker_id]->is_busy())
             {
@@ -197,7 +197,7 @@ inline bool ThreadPoolImpl<Task>::tryPost(Handler&& handler)
                 break;
             }
         }
-        if (worker_id == m_num_workers)
+        if (worker_id == m_workers.size())
         {
             while (m_num_workers < m_options.threadCount()) /// empty slots?
             {
@@ -257,21 +257,9 @@ inline void ThreadPoolImpl<Task>::tryShrink(Worker<Task>* /* worker */)
 
     if (!(m_shrink_attempt++ % skip_shrink_attempts))
     {
-        // if (m_active_tasks < m_num_workers)
-        // {
-        //     std::unique_lock lock(m_mutex);
-        //     if (!worker->is_busy() && m_active_tasks < m_num_workers && m_num_workers > m_options.threadCount())
-        //     {
-        //         std::cout << "shrinking" << std::endl;
-        //         worker->stop();
-        //         auto num = worker->get_id();
-        //         m_workers[num] = 0;
-        //         m_free_workers.push_back(num);
-        //         m_num_workers--;
-        //     }
-        // }
         auto now = std::chrono::steady_clock::now();
-        for (size_t worker_num = 0; worker_num < m_num_workers; ++worker_num)
+        std::unique_lock lock(m_mutex);
+        for (size_t worker_num = 0; worker_num < m_workers.size(); ++worker_num)
         {
             const auto worker_ptr = m_workers[worker_num].get();
             if (worker_ptr && !worker_ptr->is_busy())
