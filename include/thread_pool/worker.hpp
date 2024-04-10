@@ -16,8 +16,7 @@ namespace tp
 /**
  * @brief The Worker class owns task queue and executing thread.
  * In thread it tries to poqp task from queue. If queue is empty then it tries
- * to steal task from the sibling worker. If steal was unsuccessful then spins
- * with one millisecond delay.
+ * to steal task from the sibling worker. If steal was unsuccessful then waits
  */
 template <typename Task>
 class Worker
@@ -27,7 +26,7 @@ public:
      * @brief Worker Constructor.
      * @param queue_size Length of undelaying task queue.
      */
-    explicit Worker(size_t queue_size, ActiveWorkers* handler_ptr);
+    explicit Worker(size_t queue_size, ActiveWorkers<Task> * handler_ptr);
 
     /**
      * @brief Move ctor implementation.
@@ -42,9 +41,8 @@ public:
     /**
      * @brief start Create the executing thread and start tasks execution.
      * @param id Worker ID.
-     * @param steal_donor Sibling worker to steal task from it.
      */
-    void start(size_t id, Worker* steal_donor);
+    void start(size_t id);
 
     /**
      * @brief stop Stop all worker's thread and stealing activity.
@@ -60,12 +58,6 @@ public:
     template <typename Handler>
     bool post(Handler&& handler);
 
-    /**
-     * @brief steal Steal one task from this worker queue.
-     * @param task Place for stealed task to be stored.
-     * @return true on success.
-     */
-    bool steal(Task& task);
 
     /**
      * @brief getWorkerIdForCurrentThread Return worker ID associated with
@@ -101,13 +93,14 @@ public:
         return m_idle_since;
     }
 
+    bool steal(Task& task);
+
 private:
     /**
      * @brief threadFunc Executing thread function.
      * @param id Worker ID to be associated with this thread.
-     * @param steal_donor Sibling worker to steal task from it.
      */
-    void threadFunc(size_t id, Worker* steal_donor);
+    void threadFunc(size_t id);
 
     template <typename T>
     bool pop(T & val)
@@ -135,7 +128,7 @@ private:
 
     // bool m_busy;
 
-    ActiveWorkers* m_handler_ptr;
+    ActiveWorkers<Task> * m_handler_ptr;
     std::atomic<bool> m_busy;
     ssize_t m_id = -1;
 
@@ -155,7 +148,7 @@ namespace detail
 }
 
 template <typename Task>
-inline Worker<Task>::Worker(size_t queue_size, ActiveWorkers* handler_ptr)
+inline Worker<Task>::Worker(size_t queue_size, ActiveWorkers<Task> * handler_ptr)
     : m_cb(queue_size)
     , m_running_flag(true)
     , m_handler_ptr(handler_ptr)
@@ -186,25 +179,21 @@ inline Worker<Task>& Worker<Task>::operator=(Worker&& rhs) noexcept
 template <typename Task>
 inline void Worker<Task>::stop()
 {
+    // std::cout << std::this_thread::get_id() << " m_id=" << m_id << " Worker::stop()" << std::endl;
     m_running_flag.store(false, std::memory_order_relaxed);
     // m_sema.release();
-    m_cond_var.notify_one();
+    m_cond_var.notify_all();
     m_thread.join();
 }
 
 template <typename Task>
-inline void Worker<Task>::start(size_t id, Worker* steal_donor)
+inline void Worker<Task>::start(size_t id)
 {
     m_id = id;
 
     assert (!m_thread.joinable());
-    if (steal_donor == this)
-    {
-        steal_donor = 0;
-    }
 
-
-    m_thread = std::thread(&Worker<Task>::threadFunc, this, id, steal_donor);
+    m_thread = std::thread(&Worker<Task>::threadFunc, this, id);
 }
 
 template <typename Task>
@@ -257,7 +246,7 @@ inline bool Worker<Task>::steal(Task& task)
 }
 
 template <typename Task>
-inline void Worker<Task>::threadFunc(size_t id, Worker* steal_donor)
+inline void Worker<Task>::threadFunc(size_t id)
 {
     *detail::thread_id() = id;
 
@@ -265,11 +254,16 @@ inline void Worker<Task>::threadFunc(size_t id, Worker* steal_donor)
 
     while (m_running_flag.load(std::memory_order_relaxed))
     {
-        std::unique_lock lock(m_mutex);
-
-        if (pop(handler)  || (steal_donor && steal_donor->steal(handler)) )
+        bool got_task = false;
         {
-            lock.unlock();  // too late in case of steal
+            std::unique_lock lock(m_mutex);
+            got_task = pop(handler);
+        }
+
+
+        if (got_task  || (m_handler_ptr->steal(handler, m_id)) )
+        {
+            // lock.unlock();  // too late in case of steal
             try
             {
                 if (!m_busy)
@@ -319,6 +313,7 @@ inline void Worker<Task>::threadFunc(size_t id, Worker* steal_donor)
             // std::this_thread::sleep_for(std::chrono::milliseconds(1));
             // m_sema.acquire();
             // m_busy.store(false, std::memory_order_relaxed);
+            std::unique_lock lock(m_mutex);
             m_cond_var.wait(lock);
         }
     }

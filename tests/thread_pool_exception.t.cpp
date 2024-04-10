@@ -26,6 +26,8 @@ TEST(ThreadPool, postJob)
     std::packaged_task<int()> t([]()
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        throw std::runtime_error("some error");
+
         return 42;
     });
 
@@ -33,7 +35,26 @@ TEST(ThreadPool, postJob)
 
     pool.post(t);
 
-    ASSERT_EQ(42, r.get());
+    try
+    {
+        pool.wait();
+    }
+    catch(std::exception&)
+    {
+        std::cout << "exception from wait()" << std::endl;
+    }
+
+    size_t result = 0;
+    try
+    {
+        result = r.get();
+    }
+    catch(std::exception&)
+    {
+        std::cout << "exception from get()" << std::endl;
+    }
+
+    ASSERT_EQ(42, result);
 }
 
 int main(int argc, char **argv) {

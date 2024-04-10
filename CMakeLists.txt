@@ -13,6 +13,10 @@ endif()
 enable_testing()
 add_subdirectory(googletest)
 
+add_compile_options(-fsanitize=thread)
+add_link_options(-fsanitize=thread)
+
+
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/googletest/googletest/include)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include)
 
@@ -27,4 +31,9 @@ file(GLOB_RECURSE INSTALL_FILES_LIST "${CMAKE_CURRENT_SOURCE_DIR}/include/*")
 set_source_files_properties(${INSTALL_FILES_LIST} PROPERTIES HEADER_FILE_ONLY 1)
 add_library(HEADER_ONLY_TARGET STATIC ${INSTALL_FILES_LIST})
 set_target_properties(HEADER_ONLY_TARGET PROPERTIES LINKER_LANGUAGE CXX)
+
+target_compile_options(HEADER_ONLY_TARGET PRIVATE -fsanitize=thread)
+target_link_options(HEADER_ONLY_TARGET PRIVATE -fsanitize=thread)
+
+
 install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/include/" DESTINATION "include")

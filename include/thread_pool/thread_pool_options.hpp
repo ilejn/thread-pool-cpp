@@ -93,7 +93,7 @@ inline size_t ThreadPoolOptions::queueSize() const
 
 inline size_t ThreadPoolOptions::maxFreeThreads() const
 {
-    return m_max_free_threads == -1 ? m_thread_count : m_max_free_threads;
+    return m_max_free_threads == -1 ? 0 : m_max_free_threads;
 }
 
 }
